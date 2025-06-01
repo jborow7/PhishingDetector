@@ -9,8 +9,18 @@ import pandas as pd
 import seaborn as sns
 from sklearn.model_selection import StratifiedKFold, train_test_split
 from sklearn.metrics import accuracy_score, precision_recall_fscore_support, roc_auc_score, confusion_matrix, ConfusionMatrixDisplay, classification_report, roc_curve, auc
+import sys
 import torch
 from transformers import AutoTokenizer, DistilBertForSequenceClassification, TrainingArguments, Trainer, EarlyStoppingCallback, set_seed
+
+# Define hyperparameter grid
+hyperparameter_grid = [
+    {"learning_rate": 5e-5, "weight_decay": 0.01},
+    {"learning_rate": 3e-5, "weight_decay": 0.01},
+    {"learning_rate": 2e-5, "weight_decay": 0.1},
+    {"learning_rate": 2e-5, "weight_decay": 0.01},  # baseline
+    {"learning_rate": 1e-5, "weight_decay": 0.01},
+]
 
 def tokenize_and_cache(
     emails,
@@ -63,6 +73,19 @@ def compute_metrics(eval_pred):
     }
 
 if __name__ == "__main__":
+
+    # Get experiment index
+    if len(sys.argv) < 2:
+        print("Usage: python script.py <experiment_index>")
+        sys.exit(1)
+
+    try:
+        experiment_index = int(sys.argv[1])
+        config = hyperparameter_grid[experiment_index]
+    except (IndexError, ValueError):
+        print("Invalid experiment index. Provide a number between 0 and", len(hyperparameter_grid) - 1)
+        sys.exit(1)
+
     # Load dataset
     df = pd.read_csv("clean_data_no_stop.csv")
     df["cleaned text"] = df["cleaned text"].astype(str)  # ensure all text is string
@@ -78,7 +101,7 @@ if __name__ == "__main__":
     skf = StratifiedKFold(n_splits=k, shuffle=True, random_state=42)
     
     data_dir = "DBert_data"
-    report_dir = "DBert_results"
+    report_dir = os.path.join("DBert_results", f"config_{experiment_index}")
     os.makedirs(data_dir, exist_ok=True)
     os.makedirs(report_dir, exist_ok=True)
 
@@ -121,11 +144,11 @@ if __name__ == "__main__":
             output_dir=fold_output_dir,
             evaluation_strategy="epoch",
             save_strategy="epoch",
-            learning_rate=2e-5,
+            learning_rate=config["learning_rate"],
             per_device_train_batch_size=16,
             per_device_eval_batch_size=64,
             num_train_epochs=3,
-            weight_decay=0.01,
+            weight_decay=config["weight_decay"],
             load_best_model_at_end=True,
             metric_for_best_model="f1",
             greater_is_better=True,
@@ -267,6 +290,7 @@ if __name__ == "__main__":
     fpr, tpr, _ = roc_curve(y_test_true, probs)
     roc_auc = auc(fpr, tpr)
 
+    roc_path = os.path.join(report_dir, "roc_curve_test_set.png")
     plt.figure()
     plt.plot(fpr, tpr, label=f"ROC Curve (AUC = {roc_auc:.2f})")
     plt.plot([0, 1], [0, 1], 'k--')
@@ -274,10 +298,10 @@ if __name__ == "__main__":
     plt.ylabel("True Positive Rate")
     plt.title("ROC Curve - Test Set")
     plt.legend(loc="lower right")
-    plt.savefig(os.path.join(report_dir, "roc_curve_test_set.png"))
+    plt.savefig(roc_path)
     plt.close()
 
-    print(f"ROC Curve graph saved at {os.path.join(report_dir, "roc_curve_test_set.png")}")
+    print(f"ROC Curve graph saved at {roc_path}")
 
     # Confusion matrix
     cm = confusion_matrix(y_test_true, y_test_pred)
@@ -299,6 +323,10 @@ if __name__ == "__main__":
     cm_path2 = os.path.join(report_dir, "test_confusion_matrix_normalized.png")
     plt.savefig(cm_path2)
     plt.close()
+
+    print("Saving the model")
+    # Save the model
+    test_trainer.save_model(f"phishing-distilbert-model_config_{experiment_index}")
 
     test_class_report = classification_report(
         y_test_true, y_test_pred, target_names=["Legit", "Phish"], digits=4
@@ -327,7 +355,7 @@ if __name__ == "__main__":
     ---------------- Evaluation Metrics ----------------
     {json.dumps(test_metrics, indent=4)}
 
-    ROC Curve visualization saved at: {os.path.join(report_dir, "roc_curve_test_set.png")}
+    ROC Curve visualization saved at: {roc_path}
 
     ---------------- Classification Report ----------------
     {test_class_report}
